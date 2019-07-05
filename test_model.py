@@ -30,5 +30,6 @@ if __name__ == '__main__':
     K.set_learning_phase(1)
     
     latent_shape = encoder.output.shape.as_list()[1:]
-    latent_block = special.build_latent_block(latent_shape,geo_rate=0.95)
+    latent_block = special.build_latent_block(latent_shape,geom_rate=0.95)
+    geom_layer = latent_block.get_layer('geom_dropout')
     out = latent_block.predict(latent_params)
