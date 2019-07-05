@@ -96,7 +96,7 @@ class BernoulliSampling(Layer):
             return K.round(inputs)
         
         return K.in_train_phase(sampled, quantized, training=training)
-        
+#        return K.in_train_phase(sampled, inputs, training=training)
 
     def get_config(self):
         return super(BernoulliSampling, self).get_config()
@@ -129,7 +129,8 @@ class GeometricDropout(Layer):
         self.latent_size = input_shape.as_list()[1]
         self.indices = self.add_weight(name="geom_indices",
                                      shape=(1,self.latent_size,),
-                                     dtype=tf.float32)
+                                     dtype=tf.float32,
+                                     trainable=False)
         _indices = np.expand_dims(np.arange(0,self.latent_size)-self.geom_val,axis=0)
         self.set_weights([_indices])
     def call(self, inputs, training=None):
