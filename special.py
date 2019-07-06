@@ -10,8 +10,9 @@ import warnings
 
 from tensorflow.keras.losses import binary_crossentropy
 
-def tanh_crossentropy(y_true,y_pred):
-    return keras.backend.sum(binary_crossentropy((y_true+1)/2,(y_pred+1)/2))
+def tanh_crossentropy(y_true,y_pred,batch_repeats):
+    y_true = K.repeat_elements(y_true,batch_repeats,axis=0)
+    return K.sum(binary_crossentropy((y_true+1)/2,(y_pred+1)/2))
 
 class UpdateGeomRate(Callback):
 
@@ -55,8 +56,10 @@ class UpdateGeomRate(Callback):
         if self.monitor_op(current, self.best):
             self.best = current
         else:
-            geom_val = self.geom_drop_layer.get_geom_val()
-            self.geom_drop_layer.set_geom_val(geom_val+1)
+            
+            geom_val = self.geom_drop_layer.get_geom_val()+1
+            print('updating geom dropout indices, now at :',geom_val)
+            self.geom_drop_layer.set_geom_val(geom_val)
 
     def get_monitor_value(self, logs):
         monitor_value = logs.get(self.monitor)
@@ -69,38 +72,45 @@ class UpdateGeomRate(Callback):
         return monitor_value
 
 
-def build_latent_block(input_shape,geom_rate):
+def build_latent_block(input_shape,geom_rate,num_repeats=1):
     input_layer = keras.layers.Input(shape=input_shape,name='latent_input')
-    sampled = BernoulliSampling()(input_layer)
+    sampled = BernoulliSampling(num_repeats)(input_layer)
     tanh = Lambda(lambda x : (x-0.5)*2)(sampled)
     drop = GeometricDropout(geom_rate,name='geom_dropout')(tanh)
-    return keras.models.Model([input_layer],[drop],name='latent')
+    return keras.models.Model([input_layer],[drop],name='latent_block')
     
-#    tanh = Lambda(lambda x : (x-0.5)*2)(input_layer)
-#    return keras.models.Model([input_layer],[tanh],name='latent')
-
 class BernoulliSampling(Layer):
 
-    def __init__(self, **kwargs):
+    def __init__(self,num_repeats=1,**kwargs):
         super(BernoulliSampling, self).__init__(**kwargs)
         self.supports_masking = True
+        self.num_repeats = num_repeats
 
 
     def call(self, inputs, training=None):
-
+        _,latent_size = inputs.shape.as_list()
         def sampled():
             dist = tfp.distributions.Bernoulli(probs=inputs,dtype=tf.float32)
-            return dist.sample()
+            sample =  dist.sample(sample_shape=(self.num_repeats))
+            s_shape = tf.shape(inputs)
+            out = tf.reshape(sample,(s_shape[0]*self.num_repeats,latent_size))
+            return out
         
         def quantized():
-            return K.round(inputs)
+            differentiable_round = tf.maximum(inputs-0.499,0)
+            differentiable_round = differentiable_round * 10000
+            differentiable_round = tf.minimum(differentiable_round, 1)
+#            return differentiable_round
+            return K.repeat_elements(differentiable_round,self.num_repeats,axis=0)
+#            return K.stop_gradient(K.round(inputs)) #why doesn't this work
         
         return K.in_train_phase(sampled, quantized, training=training)
-#        return K.in_train_phase(sampled, inputs, training=training)
 
     def get_config(self):
-        return super(BernoulliSampling, self).get_config()
-
+        config = {'num_repeats': self.num_repeats}
+        base_config = super(BernoulliSampling, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+    
     def compute_output_shape(self, input_shape):
         return input_shape
 
@@ -116,7 +126,7 @@ class GeometricDropout(Layer):
         
     def set_geom_val(self,geom_val):
         self.geom_val = geom_val
-        self.set_geom_indices
+        self.set_geom_indices()
         
     def get_geom_val(self):
         return self.geom_val
@@ -158,6 +168,34 @@ class GeometricDropout(Layer):
     #TODO have indices be a variable that can be updated
     def set_indices(self):
         pass
+
+class RepeatBatch(Layer):
+
+    def __init__(self, num_repeats,**kwargs):
+        super(RepeatBatch,self).__init__(**kwargs)
+        self.supports_masking = True
+        self.num_repeats = num_repeats
+
+
+    def call(self, inputs, training=None):
+
+        return K.repeat_elements(inputs, self.num_repeats, axis=0)
+
+    def get_config(self):
+        config = {'num_repeats': self.num_repeats,}
+        base_config = super(RepeatBatch, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+
+    def compute_output_shape(self, input_shape):
+        return input_shape
+    
+def build_repeat_block(input_shape,num_repeats):
+    input_layer = keras.layers.Input(shape=input_shape,name='repeat_input')
+    
+    out = RepeatBatch(num_repeats)(input_layer)
+
+    return keras.models.Model([input_layer],[out],name='repeat_block')
+
 
 if __name__ == '__main__':
     sess = K.get_session()
