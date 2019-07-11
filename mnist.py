@@ -1,12 +1,20 @@
 
 
 import tensorflow as tf
+import numpy as np
 import tensorflow.keras as keras
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import (Dense,Reshape,Conv2DTranspose,BatchNormalization,
                                      LeakyReLU,Conv2D,Dropout,Flatten,Input)
 from tensorflow.keras.datasets import mnist
-import numpy as np
+
+#import keras 
+#from keras.models import Sequential
+#from keras.layers import (Dense,Reshape,Conv2DTranspose,BatchNormalization,
+#                                     LeakyReLU,Conv2D,Dropout,Flatten,Input)
+#from keras.datasets import mnist
+
+
 
 
 #encoder/decoder shapes are as seen here : https://github.com/keras-team/keras/blob/master/examples/mnist_acgan.py

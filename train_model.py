@@ -1,10 +1,14 @@
 import mnist
 import argparse
 import tensorflow as tf
-import tensorflow.keras as keras
-from special import (tanh_crossentropy,build_latent_block,
-                     UpdateGeomRate,build_repeat_block)
 
+import tensorflow.keras as keras
+#
+#import keras
+
+from special import (tanh_crossentropy,build_latent_block,
+                     UpdateGeomRate,build_repeat_block,FixedModelCheckpoint)
+#from tensorflow.keras.callbacks import ModelCheckpoint
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
@@ -67,6 +71,15 @@ if __name__ == '__main__':
     else:
         pass
     
+    ###Config Stuff
+    config = {'use_grad_stop_mask':False,
+              'temperature':0.1
+            }
+    #overwrite the parser args
+    batch_size = 64
+    batch_repeats = 1
+    ###
+    
     #Set up data
     x_train,x_test,_,_ = dataset.get_data()
     data_shape = x_test.shape[1:]
@@ -84,35 +97,42 @@ if __name__ == '__main__':
     latent_shape = encoder_out.shape.as_list()[1:]
     
     repeat_block = build_repeat_block(latent_shape,batch_repeats)
-    repeat_out = repeat_block(encoder_out)
+#    repeat_out = repeat_block(encoder_out)
+#    repeat_input = repeat_block(input_layer)
+    repeat_out = encoder_out
+    repeat_input = input_layer
     
     latent_block = build_latent_block(latent_shape,geom_rate=geom_rate,
+                                      temperature=config['temperature'],
+                                      use_grad_stop_mask=config['use_grad_stop_mask']
                                       )
     latent_out = latent_block(repeat_out)
     
-    decoder = dataset.build_decoder(latent_shape)(latent_out)
-#    decoder = dataset.build_decoder(latent_shape)(repeat_out)
+    decoder = dataset.build_decoder(latent_shape)
+    decoder_out = decoder(latent_out)
+#    decoder_out = decoder(encoder_out)
     
-    model = keras.models.Model([input_layer],
-                                [decoder])
+    training_model = keras.models.Model([input_layer],
+                                   [decoder_out])
+    saving_model = keras.models.Model([input_layer],
+                                   [decoder_out])
     
     #start training
-    model.add_loss(tanh_crossentropy(input_layer,decoder,
-                                     batch_repeats=batch_repeats))
+    training_model.add_loss(tanh_crossentropy(repeat_input,decoder_out))
+#    model.add_loss(keras.losses.MeanSquaredError()(repeat_input,decoder_out))
     
-    model.compile(
+    training_model.compile(
             optimizer=keras.optimizers.Adam(),
+#            loss=tanh_crossentropy(repeat_input,decoder_out)
             )
-    
+#    
     early_stopping = keras.callbacks.EarlyStopping(patience=patience)
-    
+    model_check = FixedModelCheckpoint(out,saving_model,save_best_only=True)
     geom_layer = latent_block.get_layer('geom_dropout')
     update_geom = UpdateGeomRate(geom_layer)
-    
-    model.fit(x_train,validation_data=(x_test,None),
+    training_model.fit(x_train,validation_data=(x_test,None),
               batch_size=batch_size,
               epochs=epochs,
-              callbacks=[early_stopping,update_geom],
+              callbacks=[early_stopping,update_geom,model_check],
 #              callbacks=[early_stopping],
               )
-    model.save(out)
