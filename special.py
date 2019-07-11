@@ -75,39 +75,47 @@ class UpdateGeomRate(Callback):
 def build_latent_block(input_shape,geom_rate,num_repeats=1):
     input_layer = keras.layers.Input(shape=input_shape,name='latent_input')
     sampled = BernoulliSampling(num_repeats)(input_layer)
+#    tanh = Lambda(lambda x : (x-0.5)*2)(input_layer)
     tanh = Lambda(lambda x : (x-0.5)*2)(sampled)
     drop = GeometricDropout(geom_rate,name='geom_dropout')(tanh)
     return keras.models.Model([input_layer],[drop],name='latent_block')
     
 class BernoulliSampling(Layer):
 
-    def __init__(self,num_repeats=1,**kwargs):
+    def __init__(self,num_repeats=1,temperature=0.1,**kwargs):
         super(BernoulliSampling, self).__init__(**kwargs)
         self.supports_masking = True
         self.num_repeats = num_repeats
+        self.temperature = temperature
 
 
     def call(self, inputs, training=None):
         _,latent_size = inputs.shape.as_list()
         def sampled():
-            dist = tfp.distributions.Bernoulli(probs=inputs,dtype=tf.float32)
-            sample =  dist.sample(sample_shape=(self.num_repeats))
-            s_shape = tf.shape(inputs)
-            out = tf.reshape(sample,(s_shape[0]*self.num_repeats,latent_size))
-            return out
+#            dist = tfp.distributions.Bernoulli(probs=inputs,dtype=tf.float32)
+            dist = tfp.distributions.RelaxedBernoulli(probs=inputs,
+                                                      temperature=self.temperature)
+            sample =  dist.sample(sample_shape=())
+            return sample
+            
+#            sample =  dist.sample(sample_shape=(self.num_repeats))
+#            s_shape = tf.shape(inputs)
+#            out = tf.reshape(sample,(s_shape[0]*self.num_repeats,latent_size))
+#            return out
         
         def quantized():
             differentiable_round = tf.maximum(inputs-0.499,0)
             differentiable_round = differentiable_round * 10000
             differentiable_round = tf.minimum(differentiable_round, 1)
-#            return differentiable_round
-            return K.repeat_elements(differentiable_round,self.num_repeats,axis=0)
+            return differentiable_round
+#            return K.repeat_elements(differentiable_round,self.num_repeats,axis=0)
 #            return K.stop_gradient(K.round(inputs)) #why doesn't this work
         
         return K.in_train_phase(sampled, quantized, training=training)
 
     def get_config(self):
-        config = {'num_repeats': self.num_repeats}
+        config = {'num_repeats': self.num_repeats,
+                  'temperature':self.temperature}
         base_config = super(BernoulliSampling, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
     
@@ -123,7 +131,9 @@ class GeometricDropout(Layer):
         self.geom_val = geom_val
         self.latent_size = None
         self.indices = None
-        
+        self.stop_gradient_mask = None
+        self.gradient_mask = None
+        self.valid_mask = None
     def set_geom_val(self,geom_val):
         self.geom_val = geom_val
         self.set_geom_indices()
@@ -133,7 +143,13 @@ class GeometricDropout(Layer):
     
     def set_geom_indices(self):
         _indices = np.expand_dims(np.arange(0,self.latent_size)-self.geom_val,axis=0)
-        self.set_weights([_indices])
+        stop_gradient_mask = np.zeros(((1,self.latent_size,)))
+        stop_gradient_mask[...,:self.geom_val] = 1
+        gradient_mask = np.ones(((1,self.latent_size,)))
+        gradient_mask[...,:self.geom_val] = 0
+        valid_mask = np.zeros(((1,self.latent_size,)))
+        valid_mask[...,:self.geom_val+1] = 1
+        self.set_weights([_indices,stop_gradient_mask,gradient_mask,valid_mask])
         
     def build(self,input_shape):
         self.latent_size = input_shape.as_list()[1]
@@ -141,8 +157,25 @@ class GeometricDropout(Layer):
                                      shape=(1,self.latent_size,),
                                      dtype=tf.float32,
                                      trainable=False)
-        _indices = np.expand_dims(np.arange(0,self.latent_size)-self.geom_val,axis=0)
-        self.set_weights([_indices])
+        self.stop_gradient_mask = self.add_weight(
+                                name="stop_gradient_mask",
+                                 shape=(1,self.latent_size,),
+                                 dtype=tf.float32,
+                                 trainable=False)
+        self.gradient_mask = self.add_weight(
+                            name="gradient_mask",
+                             shape=(1,self.latent_size,),
+                             dtype=tf.float32,
+                             trainable=False)
+        self.valid_mask = self.add_weight(
+                        name="valid_mask",
+                         shape=(1,self.latent_size,),
+                         dtype=tf.float32,
+                         trainable=False)
+        self.set_geom_indices()
+#        _indices = np.expand_dims(np.arange(0,self.latent_size)-self.geom_val,axis=0)
+#        self.set_weights([_indices])
+        
     def call(self, inputs, training=None):
         
         if 0 < self.rate < 1:
@@ -152,9 +185,18 @@ class GeometricDropout(Layer):
                 geom = tfp.distributions.Geometric(probs=[self.rate])
                 geom_sample = geom.sample(sample_shape=(K.shape(inputs)[0]))
                 drop = tf.cast(indices <= geom_sample,tf.float32)
-                return inputs * drop
+                
+                stop_gradient_mask = tf.broadcast_to(self.stop_gradient_mask,K.shape(inputs))
+                gradient_mask= tf.broadcast_to(self.gradient_mask,K.shape(inputs))
+                
+                masked_gradient_input = tf.stop_gradient(inputs*stop_gradient_mask) + inputs*gradient_mask
+                return masked_gradient_input * drop
             
-            return K.in_train_phase(noised, inputs, training=training)
+            def valid_masked_only():
+                valid_mask = tf.broadcast_to(self.valid_mask,K.shape(inputs))
+                return inputs*valid_mask
+            
+            return K.in_train_phase(noised, valid_masked_only, training=training)
         return inputs
 
     def get_config(self):

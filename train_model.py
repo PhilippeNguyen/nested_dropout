@@ -83,14 +83,15 @@ if __name__ == '__main__':
     encoder_out = dataset.build_encoder(data_shape,latent_size)(input_layer)
     latent_shape = encoder_out.shape.as_list()[1:]
     
-#    repeat_block = build_repeat_block(latent_shape,batch_repeats)
-#    repeat_out = repeat_block(encoder_out)
+    repeat_block = build_repeat_block(latent_shape,batch_repeats)
+    repeat_out = repeat_block(encoder_out)
     
     latent_block = build_latent_block(latent_shape,geom_rate=geom_rate,
-                                      num_repeats=batch_repeats)
-    latent_out = latent_block(encoder_out)
+                                      )
+    latent_out = latent_block(repeat_out)
     
     decoder = dataset.build_decoder(latent_shape)(latent_out)
+#    decoder = dataset.build_decoder(latent_shape)(repeat_out)
     
     model = keras.models.Model([input_layer],
                                 [decoder])
@@ -112,5 +113,6 @@ if __name__ == '__main__':
               batch_size=batch_size,
               epochs=epochs,
               callbacks=[early_stopping,update_geom],
+#              callbacks=[early_stopping],
               )
     model.save(out)
