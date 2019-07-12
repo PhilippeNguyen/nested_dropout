@@ -18,7 +18,7 @@ from tensorflow.keras.datasets import mnist
 
 
 #encoder/decoder shapes are as seen here : https://github.com/keras-team/keras/blob/master/examples/mnist_acgan.py
-def build_encoder(input_shape,latent_size):
+def build_encoder(input_shape,output_size=256):
     input_layer = keras.layers.Input(shape=input_shape,name='encoder_input')
     x = Conv2D(32, 3, padding='same', strides=2,
                    input_shape=(28, 28, 1),)(input_layer)
@@ -33,12 +33,12 @@ def build_encoder(input_shape,latent_size):
     x = LeakyReLU(0.2)(x)
     x = Dropout(0.3)(x)
 
-    x = Conv2D(256, 3, padding='same', strides=1)(x)
+    x = Conv2D(output_size, 3, padding='same', strides=1)(x)
     x = LeakyReLU(0.2)(x)
     x = Dropout(0.3)(x)
 
     x = Flatten()(x)
-    x = Dense(latent_size,activation='sigmoid',name='latent_params')(x)
+    
     
     return keras.models.Model([input_layer],[x],name='encoder')
     

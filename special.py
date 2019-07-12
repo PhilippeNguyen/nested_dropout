@@ -3,7 +3,7 @@ import tensorflow_probability as tfp
 
 import tensorflow.keras as keras
 import tensorflow.keras.backend as K
-from tensorflow.keras.layers import Layer,Lambda,Multiply
+from tensorflow.keras.layers import Layer,Lambda,Multiply,Dropout,Dense
 from tensorflow.keras.callbacks import Callback,ModelCheckpoint
 from tensorflow.keras.losses import binary_crossentropy
 
@@ -18,18 +18,29 @@ from tensorflow.keras.losses import binary_crossentropy
 import numpy as np
 import warnings
 from tensorflow.python.platform import tf_logging as logging
+        
+class TrainSequence(keras.utils.Sequence):
 
+    def __init__(self, x_set, y_set, batch_size):
+        self.x, self.y = x_set, y_set
+        self.batch_size = batch_size
 
+    def __len__(self):
+        return int(np.ceil(len(self.x) / float(self.batch_size)))
 
+    def __getitem__(self, idx):
+        if self.y is None:
+            batch_y = None
+        else:
+            batch_y = self.y[idx * self.batch_size:(idx + 1) * self.batch_size]
 
-          
-#def tanh_crossentropy(y_true,y_pred,batch_repeats):
-##    y_true = K.repeat_elements(y_true,batch_repeats,axis=0)
-#    y_true = tf.tile(y_true,batch_repeats)
-#    return K.sum(binary_crossentropy((y_true+1)/2,(y_pred+1)/2))
+        batch_x = self.x[idx * self.batch_size:(idx + 1) * self.batch_size]
+
+        return batch_x,batch_y
 
 def tanh_crossentropy(y_true,y_pred):
-    return K.sum(binary_crossentropy((y_true+1)/2,(y_pred+1)/2))
+    bin_cross = binary_crossentropy((y_true+1)/2,(y_pred+1)/2)
+    return K.mean(K.sum(bin_cross,axis=(1,2)))
 
 class UpdateGeomRate(Callback):
 
@@ -134,25 +145,8 @@ class FixedModelCheckpoint(ModelCheckpoint):
                     self.save_model.save(filepath, overwrite=True)
 
 
-def build_latent_block(input_shape,geom_rate,
-                       temperature=0.1,use_grad_stop_mask=True,
-                       sampling=True,dropout=True):
-    input_layer = keras.layers.Input(shape=input_shape,name='latent_input')
-    
-    if sampling:
-        x = BernoulliSampling(temperature=temperature)(input_layer)
-    else:
-        x = input_layer
-        
-    tanh = Lambda(lambda x : (x-0.5)*2)(x)
-    
-    if dropout:
-        out = GeometricDropout(geom_rate,name='geom_dropout',
-                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
-    else:
-        out = tanh
-        
-    return keras.models.Model([input_layer],[out],name='latent_block')
+
+
     
 class BernoulliSampling(Layer):
 
@@ -279,9 +273,6 @@ class GeometricDropout(Layer):
     def compute_output_shape(self, input_shape):
         return input_shape
     
-    #TODO have indices be a variable that can be updated
-    def set_indices(self):
-        pass
 
 class RepeatBatch(Layer):
 
@@ -293,14 +284,6 @@ class RepeatBatch(Layer):
 
     def call(self, inputs, training=None):
         return K.repeat_elements(inputs, self.num_repeats, axis=0)
-#        return inputs
-#        print('hello')
-#        print(inputs.shape)
-#        multiples = [1]*len(inputs.shape)
-#        multiples[0] = self.num_repeats
-#        print(multiples)
-#        return tf.tile(inputs,multiples)
-        
 
     def get_config(self):
         config = {'num_repeats': self.num_repeats,}
@@ -309,7 +292,47 @@ class RepeatBatch(Layer):
 
     def compute_output_shape(self, input_shape):
         return input_shape
+
+def build_geosamp_block(input_shape,geom_rate,
+                       temperature=0.1,use_grad_stop_mask=True,
+                       sampling=True,dropout=True):
     
+    input_layer = keras.layers.Input(shape=input_shape,)
+    x = input_layer
+    
+    if sampling:
+        x = BernoulliSampling(temperature=temperature)(x)
+        
+    tanh = Lambda(lambda x : (x-0.5)*2)(x)
+    
+    if dropout:
+        out = GeometricDropout(geom_rate,name='geom_dropout',
+                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
+    else:
+        out = tanh
+        
+    return keras.models.Model([input_layer],[out],name='geosampler')
+
+def build_geosamp_block_2(input_shape,geom_rate,
+                       temperature=0.1,use_grad_stop_mask=True,
+                       sampling=True,dropout=True):
+    
+    input_layer = keras.layers.Input(shape=input_shape,)
+    x = input_layer
+    
+    if sampling:
+        x = BernoulliSampling(temperature=temperature)(x)
+        
+    tanh = Lambda(lambda x : (x-0.5)*2)(x)
+    
+    if dropout:
+        out = GeometricDropout(geom_rate,name='geom_dropout',
+                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
+    else:
+        out = tanh
+        
+    return keras.models.Model([input_layer],[out],name='geosampler')
+
 def build_repeat_block(input_shape,num_repeats):
     input_layer = keras.layers.Input(shape=input_shape,name='repeat_input')
     
@@ -317,6 +340,21 @@ def build_repeat_block(input_shape,num_repeats):
 
     return keras.models.Model([input_layer],[out],name='repeat_block')
 
+def build_dropout_block(input_shape):
+    input_layer = keras.layers.Input(shape=input_shape,name='dropout_input')
+    out = Dropout(0.5)(input_layer)
+
+    return keras.models.Model([input_layer],[out],name='dropout_block')
+
+def build_latent_params(input_shape,latent_size):
+    input_layer = keras.layers.Input(shape=input_shape,name='latent_params_input')
+    x = Dense(latent_size,activation='sigmoid',name='latent_params_dense')(input_layer)
+    return keras.models.Model([input_layer],[x],name='latent_params')
+
+def build_tanh_converter(input_shape):
+    input_layer = keras.layers.Input(shape=input_shape)
+    tanh = Lambda(lambda x : (x-0.5)*2)(input_layer)
+    return keras.models.Model([input_layer],[tanh],name='tanh_converter')
 
 custom_objs = globals()
 
