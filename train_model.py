@@ -73,7 +73,9 @@ if __name__ == '__main__':
     
     ###Config Stuff
     config = {'use_grad_stop_mask':False,
-              'temperature':0.1
+              'temperature':0.1,
+              'sampling':False,
+              'dropout':True
             }
     #overwrite the parser args
     batch_size = 64
@@ -93,24 +95,25 @@ if __name__ == '__main__':
     
     #Set up model
     input_layer = keras.layers.Input(shape=data_shape)
-    encoder_out = dataset.build_encoder(data_shape,latent_size)(input_layer)
+    encoder = dataset.build_encoder(data_shape,latent_size)
+    encoder_out = encoder(input_layer)
     latent_shape = encoder_out.shape.as_list()[1:]
     
     repeat_block = build_repeat_block(latent_shape,batch_repeats)
-#    repeat_out = repeat_block(encoder_out)
-#    repeat_input = repeat_block(input_layer)
-    repeat_out = encoder_out
-    repeat_input = input_layer
+
+    repeat_out = repeat_block(encoder_out)
+    repeat_input = repeat_block(input_layer)
     
     latent_block = build_latent_block(latent_shape,geom_rate=geom_rate,
                                       temperature=config['temperature'],
-                                      use_grad_stop_mask=config['use_grad_stop_mask']
+                                      use_grad_stop_mask=config['use_grad_stop_mask'],
+                                      sampling=config['sampling'],
+                                      dropout=config['dropout']
                                       )
     latent_out = latent_block(repeat_out)
     
     decoder = dataset.build_decoder(latent_shape)
     decoder_out = decoder(latent_out)
-#    decoder_out = decoder(encoder_out)
     
     training_model = keras.models.Model([input_layer],
                                    [decoder_out])
@@ -119,11 +122,9 @@ if __name__ == '__main__':
     
     #start training
     training_model.add_loss(tanh_crossentropy(repeat_input,decoder_out))
-#    model.add_loss(keras.losses.MeanSquaredError()(repeat_input,decoder_out))
     
     training_model.compile(
             optimizer=keras.optimizers.Adam(),
-#            loss=tanh_crossentropy(repeat_input,decoder_out)
             )
 #    
     early_stopping = keras.callbacks.EarlyStopping(patience=patience)
@@ -134,5 +135,4 @@ if __name__ == '__main__':
               batch_size=batch_size,
               epochs=epochs,
               callbacks=[early_stopping,update_geom,model_check],
-#              callbacks=[early_stopping],
               )

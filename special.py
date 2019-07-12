@@ -134,23 +134,31 @@ class FixedModelCheckpoint(ModelCheckpoint):
                     self.save_model.save(filepath, overwrite=True)
 
 
-def build_latent_block(input_shape,geom_rate,num_repeats=1,
-                       temperature=0.1,use_grad_stop_mask=True):
+def build_latent_block(input_shape,geom_rate,
+                       temperature=0.1,use_grad_stop_mask=True,
+                       sampling=True,dropout=True):
     input_layer = keras.layers.Input(shape=input_shape,name='latent_input')
-    sampled = BernoulliSampling(num_repeats,
-                                temperature=temperature)(input_layer)
-    tanh = Lambda(lambda x : (x-0.5)*2)(input_layer)
-#    tanh = Lambda(lambda x : (x-0.5)*2)(sampled)
-    drop = GeometricDropout(geom_rate,name='geom_dropout',
-                            use_grad_stop_mask=use_grad_stop_mask)(tanh)
-    return keras.models.Model([input_layer],[drop],name='latent_block')
+    
+    if sampling:
+        x = BernoulliSampling(temperature=temperature)(input_layer)
+    else:
+        x = input_layer
+        
+    tanh = Lambda(lambda x : (x-0.5)*2)(x)
+    
+    if dropout:
+        out = GeometricDropout(geom_rate,name='geom_dropout',
+                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
+    else:
+        out = tanh
+        
+    return keras.models.Model([input_layer],[out],name='latent_block')
     
 class BernoulliSampling(Layer):
 
-    def __init__(self,num_repeats=1,temperature=0.1,**kwargs):
+    def __init__(self,temperature=0.1,**kwargs):
         super(BernoulliSampling, self).__init__(**kwargs)
         self.supports_masking = True
-        self.num_repeats = num_repeats
         self.temperature = temperature
 
 
@@ -174,8 +182,7 @@ class BernoulliSampling(Layer):
         return K.in_train_phase(sampled, quantized, training=training)
 
     def get_config(self):
-        config = {'num_repeats': self.num_repeats,
-                  'temperature':self.temperature}
+        config = {'temperature':self.temperature}
         base_config = super(BernoulliSampling, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
     
