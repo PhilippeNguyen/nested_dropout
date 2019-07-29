@@ -51,11 +51,6 @@ if __name__ == '__main__':
         default=5,type=int,
         help="Early stopping patience"
     )
-    parser.add_argument(
-        "--batch_repeats", action="store", dest="batch_repeats",
-        default=20,type=int,
-        help="batch_repeats (total batch size = batch_size*batch_repeats)"
-    )
     
     args = parser.parse_args()
     dataset_name = args.dataset
@@ -64,7 +59,6 @@ if __name__ == '__main__':
     geom_rate = args.geom_rate
     patience= args.patience
     epochs = args.epochs
-    batch_repeats = args.batch_repeats
     out = args.save_model if args.save_model.endswith('.hdf5') else args.save_model + '.hdf5'
     if dataset_name == 'mnist':
         dataset = mnist
@@ -77,7 +71,6 @@ if __name__ == '__main__':
 
     #overwrite the parser args
     batch_size = 64
-    batch_repeats = 1
     ###
     
     #Set up data

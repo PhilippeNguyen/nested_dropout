@@ -4,7 +4,8 @@ import tensorflow.keras as keras
 import mnist
 import special
 import tensorflow.keras.backend as K
-
+import numpy as np
+#%%
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -28,3 +29,15 @@ if __name__ == '__main__':
     latent_out = latent_sampler.predict(latent_params)
     decoded_latent = decoder.predict(latent_out)
 #    
+    
+#%%
+#model_path = '/tmp/pretrain.hdf5'
+#full_model = keras.models.load_model(model_path,compile=False,
+#                                     custom_objects=special.custom_objs)
+#encoder = full_model.get_layer('encoder')
+#latent = full_model.get_layer('latent_params')
+#
+#
+#x_train,x_test,_,_ = mnist.get_data()
+#encoder_out = encoder.predict(x_test)
+#latent_params = latent.predict(encoder_out)

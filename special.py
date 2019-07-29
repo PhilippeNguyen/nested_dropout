@@ -4,8 +4,10 @@ import tensorflow_probability as tfp
 import tensorflow.keras as keras
 import tensorflow.keras.backend as K
 from tensorflow.keras.layers import Layer,Lambda,Multiply,Dropout,Dense
+from tensorflow.keras.layers import Add
 from tensorflow.keras.callbacks import Callback,ModelCheckpoint
 from tensorflow.keras.losses import binary_crossentropy
+from tensorflow.keras import initializers
 
 #import  keras
 #import keras.backend as K
@@ -42,18 +44,23 @@ def tanh_crossentropy(y_true,y_pred):
     bin_cross = binary_crossentropy((y_true+1)/2,(y_pred+1)/2)
     return K.mean(K.sum(bin_cross,axis=(1,2)))
 
-class UpdateGeomRate(Callback):
+class UpdateExtraParams(Callback):
 
     def __init__(self,
                  geom_drop_layer,
+                 stop_grad_layer,
+                 bern_layer,
                  monitor='val_loss',
                  verbose=0,
                  mode='auto',
                  ):
-        super(UpdateGeomRate, self).__init__()
+        super(UpdateExtraParams, self).__init__()
         self.geom_drop_layer = geom_drop_layer
+        self.stop_grad_layer = stop_grad_layer
+        self.bern_layer = bern_layer
         self.monitor = monitor
         self.verbose = verbose
+        self.count = 0
 
         if mode not in ['auto', 'min', 'max']:
             warnings.warn('EarlyStopping mode %s is unknown, '
@@ -77,17 +84,33 @@ class UpdateGeomRate(Callback):
         self.best = np.Inf if self.monitor_op == np.less else -np.Inf
 
     def on_epoch_end(self, epoch, logs=None):
-        current = self.get_monitor_value(logs)
-        if current is None:
-            return
-
-        if self.monitor_op(current, self.best):
-            self.best = current
-        else:
+#        current = self.get_monitor_value(logs)
+#        if current is None:
+#            return
+#
+#        if self.monitor_op(current, self.best):
+#            self.best = current
+#        else:
+#            geom_val = self.geom_drop_layer.get_geom_val()+1
+#            self.geom_drop_layer.set_geom_val(geom_val)
+#            
+#            stop_idx = self.stop_grad_layer.get_stop_idx()+1
+#            self.stop_grad_layer.set_stop_idx(stop_idx)
+        self.count+=1
+        if self.count >3:
+            self.bern_layer.set_temp(self.bern_layer.init_temp)
             
             geom_val = self.geom_drop_layer.get_geom_val()+1
-            print('updating geom dropout indices, now at :',geom_val)
             self.geom_drop_layer.set_geom_val(geom_val)
+            
+            stop_idx = self.stop_grad_layer.get_stop_idx()+1
+            self.stop_grad_layer.set_stop_idx(stop_idx)
+            
+            self.count = 0
+        else:
+            temp = self.bern_layer.get_temp()*0.7
+            self.bern_layer.set_temp(temp)
+            
 
     def get_monitor_value(self, logs):
         monitor_value = logs.get(self.monitor)
@@ -150,11 +173,25 @@ class FixedModelCheckpoint(ModelCheckpoint):
     
 class BernoulliSampling(Layer):
 
-    def __init__(self,temperature=0.1,**kwargs):
+    def __init__(self,init_temp,**kwargs):
         super(BernoulliSampling, self).__init__(**kwargs)
         self.supports_masking = True
-        self.temperature = temperature
-
+        self.init_temp = init_temp
+        self.init = initializers.Constant(init_temp)
+    
+    def set_temp(self,temperature):
+        print('setting temperature: ', temperature)
+        self.set_weights([np.asarray(temperature)])
+    
+    def get_temp(self):
+        return self.get_weights()[0]
+    
+    def build(self,input_shape):
+        self.temperature = self.add_weight(name="temperature",
+                                     shape=(),
+                                     dtype=K.floatx(),
+                                     initializer=self.init,
+                                     trainable=False)
 
     def call(self, inputs, training=None):
         _,latent_size = inputs.shape.as_list()
@@ -176,7 +213,7 @@ class BernoulliSampling(Layer):
         return K.in_train_phase(sampled, quantized, training=training)
 
     def get_config(self):
-        config = {'temperature':self.temperature}
+        config = {'init_temp':self.init_temp}
         base_config = super(BernoulliSampling, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
     
@@ -185,17 +222,14 @@ class BernoulliSampling(Layer):
 
 class GeometricDropout(Layer):
 
-    def __init__(self, rate, geom_val=0,use_grad_stop_mask=True, **kwargs):
+    def __init__(self, rate, geom_val=0, **kwargs):
         super(GeometricDropout, self).__init__(**kwargs)
         self.supports_masking = True
         self.rate = rate
         self.geom_val = geom_val
         self.latent_size = None
         self.indices = None
-        self.stop_gradient_mask = None
-        self.gradient_mask = None
         self.valid_mask = None
-        self.use_grad_stop_mask = use_grad_stop_mask
         
     def set_geom_val(self,geom_val):
         self.geom_val = geom_val
@@ -205,14 +239,11 @@ class GeometricDropout(Layer):
         return self.geom_val
     
     def set_geom_indices(self):
+        print('updating geom dropout indices, now at :',self.geom_val)
         _indices = np.expand_dims(np.arange(0,self.latent_size)-self.geom_val,axis=0)
-        stop_gradient_mask = np.zeros(((1,self.latent_size,)))
-        stop_gradient_mask[...,:self.geom_val] = 1
-        gradient_mask = np.ones(((1,self.latent_size,)))
-        gradient_mask[...,:self.geom_val] = 0
         valid_mask = np.zeros(((1,self.latent_size,)))
         valid_mask[...,:self.geom_val+1] = 1
-        self.set_weights([_indices,stop_gradient_mask,gradient_mask,valid_mask])
+        self.set_weights([_indices,valid_mask])
         
     def build(self,input_shape):
         self.latent_size = input_shape.as_list()[1]
@@ -220,16 +251,6 @@ class GeometricDropout(Layer):
                                      shape=(1,self.latent_size,),
                                      dtype=K.floatx(),
                                      trainable=False)
-        self.stop_gradient_mask = self.add_weight(
-                                name="stop_gradient_mask",
-                                 shape=(1,self.latent_size,),
-                                 dtype=K.floatx(),
-                                 trainable=False)
-        self.gradient_mask = self.add_weight(
-                            name="gradient_mask",
-                             shape=(1,self.latent_size,),
-                             dtype=K.floatx(),
-                             trainable=False)
         self.valid_mask = self.add_weight(
                         name="valid_mask",
                          shape=(1,self.latent_size,),
@@ -248,14 +269,8 @@ class GeometricDropout(Layer):
                 geom_sample = geom.sample(sample_shape=(K.shape(inputs)[0]))
                 drop = tf.cast(indices <= geom_sample,tf.float32)
                 
-                if self.use_grad_stop_mask:
-                    stop_gradient_mask = tf.broadcast_to(self.stop_gradient_mask,K.shape(inputs))
-                    gradient_mask= tf.broadcast_to(self.gradient_mask,K.shape(inputs))
-                    
-                    masked_gradient_input = tf.stop_gradient(inputs*stop_gradient_mask) + inputs*gradient_mask
-                    return masked_gradient_input * drop
-                else:
-                    return inputs * drop
+
+                return inputs * drop
             
             def valid_masked_only():
                 valid_mask = tf.broadcast_to(self.valid_mask,K.shape(inputs))
@@ -265,14 +280,83 @@ class GeometricDropout(Layer):
         return inputs
 
     def get_config(self):
-        config = {'rate': self.rate,'geom_val':self.geom_val,
-                  'use_grad_stop_mask':self.use_grad_stop_mask}
+        config = {'rate': self.rate,'geom_val':self.geom_val}
         base_config = super(GeometricDropout, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
     def compute_output_shape(self, input_shape):
         return input_shape
     
+class StopGradientMask(Add):
+    def __init__(self, stop_idx=0,**kwargs):
+        super(StopGradientMask, self).__init__(**kwargs)
+        self.stop_idx = stop_idx
+        self.stop_gradient_mask = None
+        self.gradient_mask = None
+    
+    def set_stop_idx(self,stop_idx):
+        self.stop_idx = stop_idx
+        self.set_masks()
+        
+    def get_stop_idx(self):
+        return self.stop_idx
+    
+    def set_masks(self):
+        print('setting grad mask : ', self.stop_idx)
+        stop_gradient_mask = np.zeros(((1,self.latent_size,)))
+        stop_gradient_mask[...,:self.stop_idx] = 1
+        gradient_mask = np.ones(((1,self.latent_size,)))
+        gradient_mask[...,:self.stop_idx] = 0
+
+        self.set_weights([stop_gradient_mask,gradient_mask])
+        
+    def build(self,input_shape):
+        super(StopGradientMask, self).build(input_shape)
+        assert len(input_shape) == 2
+        self.latent_size = input_shape[0].as_list()[1]
+
+        self.stop_gradient_mask = self.add_weight(
+                                name="stop_gradient_mask",
+                                 shape=(1,self.latent_size,),
+                                 dtype=K.floatx(),
+                                 trainable=False)
+        self.gradient_mask = self.add_weight(
+                            name="gradient_mask",
+                             shape=(1,self.latent_size,),
+                             dtype=K.floatx(),
+                             trainable=False)
+
+        self.set_masks()
+    
+    def _merge_function(self, inputs):
+        assert len(inputs) == 2
+        stopped_input,grad_input = inputs
+        
+        stop_gradient_mask = tf.broadcast_to(self.stop_gradient_mask,
+                                             K.shape(stopped_input))
+        gradient_mask= tf.broadcast_to(self.gradient_mask,
+                                       K.shape(grad_input))
+        
+        return (tf.stop_gradient(stopped_input*stop_gradient_mask) 
+                + grad_input*gradient_mask)
+
+        
+    def get_config(self):
+        config = {'stop_idx': self.stop_idx}
+        base_config = super(StopGradientMask, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+        
+class Quantizer(Layer):
+    def __init__(self, **kwargs):
+        super(Quantizer, self).__init__(**kwargs)
+        
+    def call(self, inputs):
+        differentiable_round = tf.maximum(inputs-0.499,0)
+        differentiable_round = differentiable_round * 10000
+        differentiable_round = tf.minimum(differentiable_round, 1)
+        return differentiable_round
+
+        
 
 class RepeatBatch(Layer):
 
@@ -294,44 +378,27 @@ class RepeatBatch(Layer):
         return input_shape
 
 def build_geosamp_block(input_shape,geom_rate,
-                       temperature=0.1,use_grad_stop_mask=True,
+                       init_temp=0.5,use_grad_stop_mask=True,
                        sampling=True,dropout=True):
     
     input_layer = keras.layers.Input(shape=input_shape,)
     x = input_layer
     
     if sampling:
-        x = BernoulliSampling(temperature=temperature)(x)
+        bern_layer = BernoulliSampling(init_temp=init_temp,name='bern_sampler')
+        x_sampled = bern_layer(x)
+        x_discrete = Quantizer()(x)
+        x = StopGradientMask(name='stop_grad_mask')([x_discrete,x_sampled])
         
     tanh = Lambda(lambda x : (x-0.5)*2)(x)
     
     if dropout:
-        out = GeometricDropout(geom_rate,name='geom_dropout',
-                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
+        out = GeometricDropout(geom_rate,name='geom_dropout')(tanh)
     else:
         out = tanh
         
     return keras.models.Model([input_layer],[out],name='geosampler')
 
-def build_geosamp_block_2(input_shape,geom_rate,
-                       temperature=0.1,use_grad_stop_mask=True,
-                       sampling=True,dropout=True):
-    
-    input_layer = keras.layers.Input(shape=input_shape,)
-    x = input_layer
-    
-    if sampling:
-        x = BernoulliSampling(temperature=temperature)(x)
-        
-    tanh = Lambda(lambda x : (x-0.5)*2)(x)
-    
-    if dropout:
-        out = GeometricDropout(geom_rate,name='geom_dropout',
-                                use_grad_stop_mask=use_grad_stop_mask)(tanh)
-    else:
-        out = tanh
-        
-    return keras.models.Model([input_layer],[out],name='geosampler')
 
 def build_repeat_block(input_shape,num_repeats):
     input_layer = keras.layers.Input(shape=input_shape,name='repeat_input')

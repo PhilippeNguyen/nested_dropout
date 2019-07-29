@@ -7,7 +7,7 @@ import tensorflow.keras as keras
 #import keras
 
 from special import (tanh_crossentropy,build_geosamp_block,
-                     UpdateGeomRate,build_repeat_block,FixedModelCheckpoint,
+                     UpdateExtraParams,build_repeat_block,FixedModelCheckpoint,
                      build_dropout_block,custom_objs,TrainSequence)
 from tensorflow.keras.callbacks import ModelCheckpoint
 
@@ -81,13 +81,15 @@ if __name__ == '__main__':
     
     ###Config Stuff
     config = {'use_grad_stop_mask':True,
-              'temperature':0.1,
+              'init_temp':0.5,
               'sampling':True,
               'dropout':True
             }
     #overwrite the parser args
     batch_size = 8
     batch_repeats = 200
+    save_best_only =False
+    lr= 5e-4
     ###
     
     #Set up data
@@ -126,7 +128,7 @@ if __name__ == '__main__':
     
     geosamp_block = build_geosamp_block(repeat_out_shape,
                                       geom_rate=geom_rate,
-                                      temperature=config['temperature'],
+                                      init_temp=config['init_temp'],
                                       use_grad_stop_mask=config['use_grad_stop_mask'],
                                       sampling=config['sampling'],
                                       dropout=config['dropout'],
@@ -144,7 +146,11 @@ if __name__ == '__main__':
     
     early_stopping = keras.callbacks.EarlyStopping(patience=patience)
     geom_layer = geosamp_block.get_layer('geom_dropout')
-    update_geom = UpdateGeomRate(geom_layer)
+    stop_grad_layer = geosamp_block.get_layer('stop_grad_mask')
+    bern_layer = geosamp_block.get_layer('bern_sampler')
+    update_extra= UpdateExtraParams(geom_drop_layer=geom_layer,
+                                 stop_grad_layer=stop_grad_layer,
+                                 bern_layer=bern_layer)
     
     #start training
 #    saving_model = keras.models.Model([input_layer],
@@ -190,14 +196,14 @@ if __name__ == '__main__':
     training_model.add_loss(tanh_crossentropy(repeat_input,decoder_out))
 
     training_model.compile(
-        optimizer=keras.optimizers.Adam(),
+        optimizer=keras.optimizers.Adam(lr=lr),
         )
-    model_check = FixedModelCheckpoint(out,saving_model,save_best_only=True)
+    model_check = FixedModelCheckpoint(out,saving_model,save_best_only=save_best_only)
     training_model.fit_generator(x_train_seq,
                                  validation_data=x_test_seq,
                                   epochs=epochs,
-                                  callbacks=[early_stopping,update_geom,model_check],
-                                  steps_per_epoch=2000,
-                                  validation_steps=500,
+                                  callbacks=[early_stopping,update_extra,model_check],
+                                  steps_per_epoch=200,
+                                  validation_steps=200,
                                   )
 
