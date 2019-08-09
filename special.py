@@ -3,19 +3,12 @@ import tensorflow_probability as tfp
 
 import tensorflow.keras as keras
 import tensorflow.keras.backend as K
-from tensorflow.keras.layers import Layer,Lambda,Multiply,Dropout,Dense
+from tensorflow.keras.layers import Layer,Lambda,Multiply,Dropout,Dense,Activation
 from tensorflow.keras.layers import Add
 from tensorflow.keras.callbacks import Callback,ModelCheckpoint
 from tensorflow.keras.losses import binary_crossentropy
 from tensorflow.keras import initializers
 
-#import  keras
-#import keras.backend as K
-#from keras.layers import Layer,Lambda,Multiply
-#from keras.callbacks import Callback,ModelCheckpoint
-#from keras.losses import binary_crossentropy
-
-#from keras.losses import binary_crossentropy
 
 import numpy as np
 import warnings
@@ -44,6 +37,13 @@ def tanh_crossentropy(y_true,y_pred):
     bin_cross = binary_crossentropy((y_true+1)/2,(y_pred+1)/2)
     return K.mean(K.sum(bin_cross,axis=(1,2)))
 
+def kl_from_uniform_bernoulli(latent_tensor,geo_index):
+    #latent_tensor should have shape (batche_size,latent_size)
+    base_dist = tfp.distributions.Bernoulli(logits=0.)
+    latent_dist = tfp.distributions.Bernoulli(logits=latent_tensor[:,:geo_index])
+    kl_dist = base_dist.kl_divergence(latent_dist)
+    return kl_dist
+
 class UpdateExtraParams(Callback):
 
     def __init__(self,
@@ -53,6 +53,7 @@ class UpdateExtraParams(Callback):
                  monitor='val_loss',
                  verbose=0,
                  mode='auto',
+                 update_count=3,
                  ):
         super(UpdateExtraParams, self).__init__()
         self.geom_drop_layer = geom_drop_layer
@@ -61,6 +62,7 @@ class UpdateExtraParams(Callback):
         self.monitor = monitor
         self.verbose = verbose
         self.count = 0
+        self.update_count = update_count
 
         if mode not in ['auto', 'min', 'max']:
             warnings.warn('EarlyStopping mode %s is unknown, '
@@ -97,7 +99,7 @@ class UpdateExtraParams(Callback):
 #            stop_idx = self.stop_grad_layer.get_stop_idx()+1
 #            self.stop_grad_layer.set_stop_idx(stop_idx)
         self.count+=1
-        if self.count >3:
+        if self.count >self.update_count:
             self.bern_layer.set_temp(self.bern_layer.init_temp)
             
             geom_val = self.geom_drop_layer.get_geom_val()+1
@@ -173,11 +175,12 @@ class FixedModelCheckpoint(ModelCheckpoint):
     
 class BernoulliSampling(Layer):
 
-    def __init__(self,init_temp,**kwargs):
+    def __init__(self,init_temp,from_logits=False,**kwargs):
         super(BernoulliSampling, self).__init__(**kwargs)
         self.supports_masking = True
         self.init_temp = init_temp
         self.init = initializers.Constant(init_temp)
+        self.from_logits = from_logits
     
     def set_temp(self,temperature):
         print('setting temperature: ', temperature)
@@ -196,8 +199,12 @@ class BernoulliSampling(Layer):
     def call(self, inputs, training=None):
         _,latent_size = inputs.shape.as_list()
         def sampled():
-            dist = tfp.distributions.RelaxedBernoulli(probs=inputs,
-                                                      temperature=self.temperature)
+            if self.from_logits:
+                dist = tfp.distributions.RelaxedBernoulli(logits=inputs,
+                                                          temperature=self.temperature)
+            else:
+                dist = tfp.distributions.RelaxedBernoulli(probs=inputs,
+                                                          temperature=self.temperature)
             sample =  dist.sample(sample_shape=())
             return sample
             
@@ -213,7 +220,7 @@ class BernoulliSampling(Layer):
         return K.in_train_phase(sampled, quantized, training=training)
 
     def get_config(self):
-        config = {'init_temp':self.init_temp}
+        config = {'init_temp':self.init_temp,'from_logits':self.from_logits}
         base_config = super(BernoulliSampling, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
     
@@ -379,13 +386,16 @@ class RepeatBatch(Layer):
 
 def build_geosamp_block(input_shape,geom_rate,
                        init_temp=0.5,use_grad_stop_mask=True,
-                       sampling=True,dropout=True):
+                       sampling=True,dropout=True,
+                       from_logits=False):
     
     input_layer = keras.layers.Input(shape=input_shape,)
     x = input_layer
     
     if sampling:
-        bern_layer = BernoulliSampling(init_temp=init_temp,name='bern_sampler')
+        bern_layer = BernoulliSampling(init_temp=init_temp,
+                                       from_logits=from_logits,
+                                       name='bern_sampler')
         x_sampled = bern_layer(x)
         x_discrete = Quantizer()(x)
         x = StopGradientMask(name='stop_grad_mask')([x_discrete,x_sampled])
@@ -413,16 +423,20 @@ def build_dropout_block(input_shape):
 
     return keras.models.Model([input_layer],[out],name='dropout_block')
 
-def build_latent_params(input_shape,latent_size):
+def build_latent_params(input_shape,latent_size,activation):
     input_layer = keras.layers.Input(shape=input_shape,name='latent_params_input')
-    x = Dense(latent_size,activation='sigmoid',name='latent_params_dense')(input_layer)
+    x = Dense(latent_size,activation=activation,name='latent_params_dense')(input_layer)
     return keras.models.Model([input_layer],[x],name='latent_params')
 
-def build_tanh_converter(input_shape):
+def build_sig_to_tanh_converter(input_shape):
     input_layer = keras.layers.Input(shape=input_shape)
     tanh = Lambda(lambda x : (x-0.5)*2)(input_layer)
-    return keras.models.Model([input_layer],[tanh],name='tanh_converter')
+    return keras.models.Model([input_layer],[tanh],name='sig_to_tanh_converter')
 
+def build_lin_to_tanh_converter(input_shape):
+    input_layer = keras.layers.Input(shape=input_shape)
+    tanh = Activation('tanh')(input_layer)
+    return keras.models.Model([input_layer],[tanh],name='lin_to_tanh_converter')
 custom_objs = globals()
 
 if __name__ == '__main__':

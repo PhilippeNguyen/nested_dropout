@@ -1,15 +1,15 @@
 
+
 import mnist
 import argparse
 import tensorflow as tf
 
 import tensorflow.keras as keras
-#
-#import keras
 
 from special import (tanh_crossentropy,
-                     UpdateGeomRate,build_repeat_block,FixedModelCheckpoint,
-                     build_dropout_block,build_latent_params,build_tanh_converter)
+                     build_repeat_block,FixedModelCheckpoint,
+                     build_dropout_block,build_latent_params,
+                     build_lin_to_tanh_converter)
 from tensorflow.keras.callbacks import ModelCheckpoint
 
 if __name__ == '__main__':
@@ -37,11 +37,6 @@ if __name__ == '__main__':
         help="filename to save the model as (.hdf5)"
     )
     parser.add_argument(
-        "--geom_rate", action="store", dest="geom_rate",
-        default=0.95,type=float,
-        help="geometric dropout rate"
-    )
-    parser.add_argument(
         "--epochs", action="store", dest="epochs",
         default=100,type=int,
         help="number of epochs to train"
@@ -56,7 +51,6 @@ if __name__ == '__main__':
     dataset_name = args.dataset
     latent_size = args.latent_size
     batch_size = args.batch_size
-    geom_rate = args.geom_rate
     patience= args.patience
     epochs = args.epochs
     out = args.save_model if args.save_model.endswith('.hdf5') else args.save_model + '.hdf5'
@@ -91,11 +85,12 @@ if __name__ == '__main__':
     encoder_out_shape = encoder_out.shape.as_list()[1:]
     
     latent_param_block = build_latent_params(encoder_out_shape,
-                                             latent_size=latent_size)
+                                             latent_size=latent_size,
+                                             activation='linear')
     latent_params_out = latent_param_block(encoder_out)
     latent_params_shape = latent_params_out.shape.as_list()[1:]
     
-    tanh_converter = build_tanh_converter(latent_params_shape)
+    tanh_converter = build_lin_to_tanh_converter(latent_params_shape)
     tanh_out = tanh_converter(latent_params_out)
     
     drop_block = build_dropout_block(latent_params_shape)
@@ -112,7 +107,7 @@ if __name__ == '__main__':
 
 
     pretrain_model.compile(
-            optimizer=keras.optimizers.Adam(),
+            optimizer=keras.optimizers.Adam(lr=0.001),
             loss=tanh_crossentropy,
             )
 #    #    start training
